@@ -7,6 +7,7 @@ import requests
 from bs4 import BeautifulSoup
 import time
 import whois
+from datetime import datetime, timedelta, timezone
 
 # --- Constants ---
 VT_API_V3_BASE_URL = "https://www.virustotal.com/api/v3"
@@ -68,9 +69,11 @@ def check_domains_availability(domains):
 
 def reanalyze_domains_vt_v3(domains, api_key, update_status_callback=None):
     """
-    Requests a re-analysis of a list of domains on VirusTotal via their API v3.
+    Requests a re-analysis of domains on VirusTotal, but only if the last
+    analysis is older than one day.
 
-    This function triggers a new scan. It does not wait for the scan to complete.
+    This function first fetches the current report for each domain. If the report
+    is fresh (less than a day old), it's skipped. Otherwise, a new scan is triggered.
     It respects VirusTotal's public API rate limits by sleeping between requests.
 
     Args:
@@ -82,15 +85,46 @@ def reanalyze_domains_vt_v3(domains, api_key, update_status_callback=None):
     if not api_key:
         return
     headers = {"x-apikey": api_key}
+    one_day_ago = datetime.now(timezone.utc) - timedelta(days=1)
+
     for i, domain in enumerate(domains):
+        should_rescan = True
         if update_status_callback:
-            update_status_callback(f"Requesting re-analysis for: {domain} ({i+1}/{len(domains)})")
-        url = f"{VT_API_V3_BASE_URL}/domains/{domain}/analyse"
+            update_status_callback(f"Checking report age for: {domain} ({i+1}/{len(domains)})")
+        
+        get_url = f"{VT_API_V3_BASE_URL}/domains/{domain}"
+        
         try:
-            requests.post(url, headers=headers)
+            response = requests.get(get_url, headers=headers)
+            time.sleep(16)
+
+            if response.status_code == 200:
+                report = response.json()
+                last_analysis_timestamp = report.get('data', {}).get('attributes', {}).get('last_analysis_date')
+                
+                if last_analysis_timestamp:
+                    last_analysis_date = datetime.fromtimestamp(last_analysis_timestamp, tz=timezone.utc)
+                    if last_analysis_date > one_day_ago:
+                        should_rescan = False
+            
+            elif response.status_code != 404:
+                print(f"Error getting report for {domain}: Status {response.status_code}")
+                # Don't try to rescan if we couldn't get a report for a reason other than not found
+                should_rescan = False
+            
+            # Now, based on the flag, perform the rescan
+            if should_rescan:
+                if update_status_callback:
+                    update_status_callback(f"Report is old/missing, requesting re-scan for {domain}...")
+                post_url = f"{VT_API_V3_BASE_URL}/domains/{domain}/analyse"
+                requests.post(post_url, headers=headers)
+                time.sleep(16)
+            else:
+                if update_status_callback:
+                    update_status_callback(f"Report for {domain} is fresh, skipping re-scan.")
+
         except requests.exceptions.RequestException as e:
-            print(f"Network error requesting re-scan for {domain}: {e}")
-        time.sleep(16)
+            print(f"Network error during re-analysis check for {domain}: {e}")
 
 def get_clean_domains_vt_v3(domains, api_key, target_counts, update_status_callback=None):
     """

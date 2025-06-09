@@ -32,18 +32,12 @@
         <h1 class="text-center mb-4">Domain Checker</h1>
         <div class="card">
             <div class="card-body">
-                <form id="run-form" action="/run" method="POST">
-                    <div class="row g-3 align-items-center">
-                        <div class="col-auto">
-                            <label for="domain_count" class="col-form-label">Desired Domains:</label>
-                        </div>
-                        <div class="col-auto">
-                            <input type="number" id="domain_count" name="domain_count" class="form-control" value="15" min="3">
-                        </div>
-                        <div class="col">
-                            <button type="submit" id="run-button" class="btn btn-primary">Start Scan</button>
-                        </div>
+                <form id="run-form" action="/run" method="post">
+                    <div class="form-group mb-3">
+                        <label for="domain_count">Number of Domains to Find:</label>
+                        <input type="number" class="form-control" id="domain_count" name="domain_count" value="15" min="3" step="3">
                     </div>
+                    <button id="run-button" type="submit" class="btn btn-primary">Start Scan</button>
                 </form>
             </div>
         </div>
@@ -53,7 +47,10 @@
                 Status
             </div>
             <div class="card-body">
-                <p id="status-message">Ready</p>
+                <div id="status-container">
+                    <p><strong>Status:</strong> <span id="status-text">idle</span></p>
+                    <p id="progress-message-container" style="display: none;"><strong>Progress:</strong> <span id="progress-text"></span></p>
+                </div>
             </div>
         </div>
         
@@ -62,7 +59,15 @@
                 Results
             </div>
             <div class="card-body">
-                <div id="results-box" class="results-box"></div>
+                <div id="results-container" style="display: none;">
+                    <h3>Results</h3>
+                    <div id="stats-summary" style="margin-bottom: 15px;">
+                        <!-- Statistics will be inserted here -->
+                    </div>
+                    <ul id="results-list">
+                        <!-- Results will be populated here -->
+                    </ul>
+                </div>
                 <button id="copy-button" class="btn btn-secondary mt-2" style="display: none;">Copy to Clipboard</button>
             </div>
         </div>
@@ -71,54 +76,66 @@
     <script>
         const runForm = document.getElementById('run-form');
         const runButton = document.getElementById('run-button');
-        const statusMessage = document.getElementById('status-message');
-        const resultsBox = document.getElementById('results-box');
+        const statusContainer = document.getElementById('status-container');
+        const statusText = document.getElementById('status-text');
+        const progressContainer = document.getElementById('progress-message-container');
+        const progressText = document.getElementById('progress-text');
+        const resultsContainer = document.getElementById('results-container');
+        const resultsList = document.getElementById('results-list');
         const copyButton = document.getElementById('copy-button');
+        const statsSummary = document.getElementById('stats-summary');
 
         function updateStatus() {
             fetch('/status')
                 .then(response => response.json())
                 .then(data => {
-                    // Update status message
+                    statusText.textContent = data.status;
+
                     if (data.status === 'running') {
-                        statusMessage.innerHTML = `<div class="spinner-border text-primary me-2" role="status"></div> ${data.progress_message}`;
+                        progressContainer.style.display = 'block';
+                        progressText.textContent = data.progress_message;
+                        resultsContainer.style.display = 'none';
                         runButton.disabled = true;
-                        runButton.innerHTML = 'Scan in Progress...';
-                    } else if (data.status === 'done') {
-                        statusMessage.textContent = 'Scan Complete!';
-                        runButton.disabled = false;
-                        runButton.innerHTML = 'Start Scan';
-                    } else if (data.status === 'error') {
-                        statusMessage.innerHTML = `<span class="text-danger">Error:</span> ${data.progress_message}`;
-                        runButton.disabled = false;
-                        runButton.innerHTML = 'Start Scan';
                     } else {
-                        statusMessage.textContent = 'Ready';
+                        progressContainer.style.display = 'none';
                         runButton.disabled = false;
-                        runButton.innerHTML = 'Start Scan';
                     }
 
-                    // Update results
-                    resultsBox.innerHTML = '';
-                    if (data.results && data.results.length > 0) {
-                        data.results.forEach(domain => {
-                            const div = document.createElement('div');
-                            div.textContent = domain;
-                            resultsBox.appendChild(div);
-                        });
-                        copyButton.style.display = 'block';
-                    } else {
-                         copyButton.style.display = 'none';
+                    if (data.status === 'done' || data.status === 'error') {
+                        resultsContainer.style.display = 'block';
+                        resultsList.innerHTML = '';
+                        statsSummary.innerHTML = '';
+
+                        if(data.status === 'done') {
+                            statsSummary.innerHTML = `
+                                <p><strong>Scraped from expireddomains.net:</strong> ${data.stats.scraped} domains</p>
+                                <p><strong>Found available (WHOIS):</strong> ${data.stats.available} domains</p>
+                                <p><strong>Passed VirusTotal check:</strong> ${data.stats.clean} domains</p>
+                            `;
+                            if (data.results.length > 0) {
+                                data.results.forEach(domain => {
+                                    const li = document.createElement('li');
+                                    li.textContent = domain;
+                                    resultsList.appendChild(li);
+                                });
+                            } else {
+                                resultsList.innerHTML = '<li>No domains passed all checks.</li>';
+                            }
+                        }
+
+                        if (data.status === 'error') {
+                             statsSummary.innerHTML = `<p style="color: red;">${data.progress_message}</p>`;
+                        }
                     }
                 })
                 .catch(error => {
-                    statusMessage.textContent = 'Error fetching status.';
+                    statusText.textContent = 'Error fetching status.';
                     console.error('Error:', error);
                 });
         }
 
         copyButton.addEventListener('click', () => {
-            const textToCopy = Array.from(resultsBox.children).map(child => child.textContent).join('\\n');
+            const textToCopy = Array.from(resultsList.children).map(child => child.textContent).join('\\n');
             navigator.clipboard.writeText(textToCopy).then(() => {
                 alert('Results copied to clipboard!');
             }, (err) => {
