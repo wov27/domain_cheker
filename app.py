@@ -22,6 +22,7 @@ task_state = {
     "status": "idle",  # "idle", "running", "done", "error"
     "progress_message": "",
     "results": [],
+    "target_count": 0, # To store the requested number for the current/last run
     "stats": {
         "scraped": 0,
         "available": 0,
@@ -62,7 +63,8 @@ def run_checker_task(target_domain_count):
             "status": "running", 
             "progress_message": "Step 1/5: Starting...",
             "results": [],
-            "stats": {"scraped": 0, "available": 0, "clean": 0}
+            "stats": {"scraped": 0, "available": 0, "clean": 0},
+            "target_count": target_domain_count
         })
         
         # --- Read config ---
@@ -157,6 +159,15 @@ def run_task():
     global task_state
     if task_state['status'] == 'running':
         return redirect(url_for('index'))
+    
+    # Reset state and start the task
+    task_state.update({
+        "status": "running", 
+        "progress_message": "Step 1/5: Starting...",
+        "results": [],
+        "stats": {"scraped": 0, "available": 0, "clean": 0},
+        "target_count": target_count
+    })
     
     thread = threading.Thread(target=run_checker_task, args=(target_count,))
     thread.start()

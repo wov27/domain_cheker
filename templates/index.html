@@ -78,6 +78,7 @@
         const runForm = document.getElementById('run-form');
         const runButton = document.getElementById('run-button');
         const stopButton = document.getElementById('stop-button');
+        const domainCountInput = document.getElementById('domain_count');
         const statusContainer = document.getElementById('status-container');
         const statusText = document.getElementById('status-text');
         const progressContainer = document.getElementById('progress-message-container');
@@ -93,15 +94,18 @@
                 .then(data => {
                     statusText.textContent = data.status;
 
-                    if (data.status === 'running') {
+                    if (data.status === 'running' || data.status === 'stopping') {
                         runButton.disabled = true;
                         stopButton.style.display = 'inline-block';
+                        domainCountInput.disabled = true;
+                        domainCountInput.value = data.target_count;
                         progressContainer.style.display = 'block';
                         progressText.textContent = data.progress_message;
                         resultsContainer.style.display = 'none';
                     } else {
                         runButton.disabled = false;
                         stopButton.style.display = 'none';
+                        domainCountInput.disabled = false;
                         progressContainer.style.display = 'none';
 
                         if (data.status === 'done' || data.status === 'error') {
