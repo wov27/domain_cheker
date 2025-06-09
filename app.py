@@ -45,19 +45,30 @@ def run_checker_task(target_domain_count):
     
     try:
         # --- Read config ---
-        config = configparser.ConfigParser()
-        config.read('config.ini')
-        cfg = config['VARS']
-        
-        expired_domains_url = cfg['EXPIRED_DOMAINS_URL']
-        session_cookies = {
-            "ExpiredDomainssessid": cfg['SESSION_ID'],
-            "reme": cfg['REME_COOKIE']
-        }
-        api_key = cfg['VIRUSTOTAL_API_KEY']
-        
-        if 'YOUR_API_KEY_HERE' in api_key or 'YOUR_SESSION_ID_COOKIE_HERE' in session_cookies['ExpiredDomainssessid']:
-             raise Exception("Please fill in your API Key and Cookies in the config.ini file.")
+        # Prioritize environment variables for production (e.g., on Render)
+        # Fall back to config.ini for local development
+        if os.getenv('VIRUSTOTAL_API_KEY'):
+            expired_domains_url = os.getenv('EXPIRED_DOMAINS_URL')
+            api_key = os.getenv('VIRUSTOTAL_API_KEY')
+            session_cookies = {
+                "ExpiredDomainssessid": os.getenv('SESSION_ID'),
+                "reme": os.getenv('REME_COOKIE')
+            }
+        else:
+            config = configparser.ConfigParser()
+            config.read('config.ini')
+            cfg = config['VARS']
+            
+            expired_domains_url = cfg['EXPIRED_DOMAINS_URL']
+            api_key = cfg['VIRUSTOTAL_API_KEY']
+            session_cookies = {
+                "ExpiredDomainssessid": cfg['SESSION_ID'],
+                "reme": cfg['REME_COOKIE']
+            }
+
+        if not all([expired_domains_url, api_key, session_cookies["ExpiredDomainssessid"], session_cookies["reme"]]) or \
+           'YOUR_' in api_key or 'YOUR_' in session_cookies["ExpiredDomainssessid"]:
+             raise Exception("Configuration is missing or incomplete. Please set environment variables or fill in config.ini.")
 
         # --- Stage 1: Scrape domains ---
         task_state["progress_message"] = "Step 1/5: Scraping domains from expireddomains.net..."
