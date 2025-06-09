@@ -118,11 +118,14 @@ def run_checker_task(target_domain_count):
             time.sleep(1)
             
         # --- Stage 5: Final Check ---
-        target_counts = {'info': target_domain_count//3, 'top': target_domain_count//3, 'xyz': target_domain_count - 2*(target_domain_count//3)}
-        clean_domains = checker.get_clean_domains_vt_v3(available_domains, api_key, target_counts, update_status_callback=update_and_check_stop)
+        update_and_check_stop("Step 5/5: Getting final reports from VirusTotal...")
+        clean_domains = checker.get_clean_domains_vt_v3(available_domains, api_key, update_status_callback=update_and_check_stop)
         task_state["stats"]["clean"] = len(clean_domains)
 
-        task_state["results"] = clean_domains
+        # Limit the results to the number requested by the user
+        final_domains = clean_domains[:target_domain_count]
+
+        task_state["results"] = final_domains
         task_state["status"] = "done"
         task_state["progress_message"] = "Process finished successfully."
 
