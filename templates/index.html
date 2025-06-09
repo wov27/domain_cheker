@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Domain Checker</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body {
+            background-color: #f8f9fa;
+        }
+        .container {
+            max-width: 700px;
+        }
+        .results-box {
+            height: 400px;
+            background-color: #fff;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            padding: 15px;
+            overflow-y: auto;
+            font-family: monospace;
+        }
+        .spinner-border {
+            width: 1rem;
+            height: 1rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="container mt-5">
+        <h1 class="text-center mb-4">Domain Checker</h1>
+        <div class="card">
+            <div class="card-body">
+                <form id="run-form" action="/run" method="POST">
+                    <div class="row g-3 align-items-center">
+                        <div class="col-auto">
+                            <label for="domain_count" class="col-form-label">Desired Domains:</label>
+                        </div>
+                        <div class="col-auto">
+                            <input type="number" id="domain_count" name="domain_count" class="form-control" value="15" min="3">
+                        </div>
+                        <div class="col">
+                            <button type="submit" id="run-button" class="btn btn-primary">Start Scan</button>
+                        </div>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <div class="card mt-4">
+            <div class="card-header">
+                Status
+            </div>
+            <div class="card-body">
+                <p id="status-message">Ready</p>
+            </div>
+        </div>
+        
+        <div class="card mt-4">
+            <div class="card-header">
+                Results
+            </div>
+            <div class="card-body">
+                <div id="results-box" class="results-box"></div>
+                <button id="copy-button" class="btn btn-secondary mt-2" style="display: none;">Copy to Clipboard</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const runForm = document.getElementById('run-form');
+        const runButton = document.getElementById('run-button');
+        const statusMessage = document.getElementById('status-message');
+        const resultsBox = document.getElementById('results-box');
+        const copyButton = document.getElementById('copy-button');
+
+        function updateStatus() {
+            fetch('/status')
+                .then(response => response.json())
+                .then(data => {
+                    // Update status message
+                    if (data.status === 'running') {
+                        statusMessage.innerHTML = `<div class="spinner-border text-primary me-2" role="status"></div> ${data.progress_message}`;
+                        runButton.disabled = true;
+                        runButton.innerHTML = 'Scan in Progress...';
+                    } else if (data.status === 'done') {
+                        statusMessage.textContent = 'Scan Complete!';
+                        runButton.disabled = false;
+                        runButton.innerHTML = 'Start Scan';
+                    } else if (data.status === 'error') {
+                        statusMessage.innerHTML = `<span class="text-danger">Error:</span> ${data.progress_message}`;
+                        runButton.disabled = false;
+                        runButton.innerHTML = 'Start Scan';
+                    } else {
+                        statusMessage.textContent = 'Ready';
+                        runButton.disabled = false;
+                        runButton.innerHTML = 'Start Scan';
+                    }
+
+                    // Update results
+                    resultsBox.innerHTML = '';
+                    if (data.results && data.results.length > 0) {
+                        data.results.forEach(domain => {
+                            const div = document.createElement('div');
+                            div.textContent = domain;
+                            resultsBox.appendChild(div);
+                        });
+                        copyButton.style.display = 'block';
+                    } else {
+                         copyButton.style.display = 'none';
+                    }
+                })
+                .catch(error => {
+                    statusMessage.textContent = 'Error fetching status.';
+                    console.error('Error:', error);
+                });
+        }
+
+        copyButton.addEventListener('click', () => {
+            const textToCopy = Array.from(resultsBox.children).map(child => child.textContent).join('\\n');
+            navigator.clipboard.writeText(textToCopy).then(() => {
+                alert('Results copied to clipboard!');
+            }, (err) => {
+                console.error('Could not copy text: ', err);
+            });
+        });
+
+        // Poll every 3 seconds
+        setInterval(updateStatus, 3000);
+        // Immediate update on page load
+        document.addEventListener('DOMContentLoaded', updateStatus);
+    </script>
+</body>
+</html> 
