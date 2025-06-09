@@ -117,17 +117,26 @@ def run_checker_task(target_domain_count):
             update_and_check_stop(f"Step 4/5: Waiting for VirusTotal to re-scan... Time left: {i//60}m {i%60}s")
             time.sleep(1)
             
-        # --- Stage 5: Final Check ---
-        update_and_check_stop("Step 5/5: Getting final reports from VirusTotal...")
-        clean_domains = checker.get_clean_domains_vt_v3(available_domains, api_key, update_status_callback=update_and_check_stop)
-        task_state["stats"]["clean"] = len(clean_domains)
+        # --- Stage 5: Final Check (and stop early if enough are found) ---
+        clean_domains_found = []
+        domain_generator = checker.yield_clean_domains_vt_v3(available_domains, api_key, update_status_callback=update_and_check_stop)
 
-        # Limit the results to the number requested by the user
-        final_domains = clean_domains[:target_domain_count]
+        for domain in domain_generator:
+            clean_domains_found.append(domain)
+            task_state["stats"]["clean"] = len(clean_domains_found)
+            
+            # Update progress with the new find
+            # Re-use the update_and_check_stop function to also check for stop requests here
+            update_and_check_stop(f"Found {len(clean_domains_found)}/{target_domain_count} clean domains. Last find: {domain}")
 
-        task_state["results"] = final_domains
+            if len(clean_domains_found) >= target_domain_count:
+                task_state["progress_message"] = f"Found {len(clean_domains_found)} matching domains. Stopping."
+                break
+        
+        task_state["results"] = clean_domains_found
         task_state["status"] = "done"
-        task_state["progress_message"] = "Process finished successfully."
+        if not task_state["progress_message"].startswith("Found"):
+             task_state["progress_message"] = "Process finished successfully."
 
     except TaskStoppedException:
         task_state["status"] = "idle"

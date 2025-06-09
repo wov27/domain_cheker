@@ -140,54 +140,57 @@ def reanalyze_domains_vt_v3(domains, api_key, update_status_callback=None):
         except requests.exceptions.RequestException as e:
             print(f"Network error during re-analysis check for {domain}: {e}")
 
-def get_clean_domains_vt_v3(domains, api_key, target_counts, update_status_callback=None):
+def yield_clean_domains_vt_v3(domains, api_key, update_status_callback=None):
     """
-    Retrieves reports for domains from VirusTotal and filters for "clean" ones.
+    Yields clean domains one by one from a given list by checking their VirusTotal reports.
 
-    A domain is considered "clean" if its latest analysis report shows 0 malicious
-    and no more than 1 suspicious flag. Domains not found on VirusTotal (404)
-    are also considered clean. The function stops once the target number of domains
-    for each TLD is met.
+    This is a generator function. It checks domains sequentially and yields
+    a domain as soon as it's confirmed to be clean. This allows the calling
+    process to stop early once a target number of domains has been found.
+
+    A domain is considered clean if it has 0 'malicious' and at most 1 'suspicious' votes.
 
     Args:
         domains (list): A list of domain names (str) to check.
         api_key (str): The VirusTotal API key.
-        target_counts (dict): A dictionary mapping TLDs (str) to the desired
-            number of domains (int) for that TLD.
         update_status_callback (function, optional): A callback function to update
             the status on the frontend. Defaults to None.
 
-    Returns:
-        list: A list of "clean" domain names (str).
+    Yields:
+        str: The next domain from the list that is confirmed to be clean.
     """
     if not api_key:
-        return domains
+        return
+
     headers = {"x-apikey": api_key}
-    clean_domains = []
-    collected_counts = {tld: 0 for tld in target_counts.keys()}
+    
     for i, domain in enumerate(domains):
-        if sum(collected_counts.values()) >= sum(target_counts.values()):
-            break
-        tld = domain.split('.')[-1]
-        if tld in target_counts and collected_counts.get(tld, 0) >= target_counts[tld]:
-            continue
         if update_status_callback:
-            update_status_callback(f"Final check for: {domain} ({i+1}/{len(domains)})")
-        url = f"{VT_API_V3_BASE_URL}/domains/{domain}"
+            update_status_callback(f"Step 5/5: Final check for {domain} ({i+1}/{len(domains)})")
+
+        get_url = f"{VT_API_V3_BASE_URL}/domains/{domain}"
+        
         try:
-            response = requests.get(url, headers=headers)
+            response = requests.get(get_url, headers=headers)
+            
+            is_clean = False
             if response.status_code == 200:
                 report = response.json()
                 stats = report.get('data', {}).get('attributes', {}).get('last_analysis_stats', {})
                 malicious = stats.get('malicious', 0)
                 suspicious = stats.get('suspicious', 0)
+                
                 if malicious == 0 and suspicious <= 1:
-                    clean_domains.append(domain)
-                    if tld in collected_counts: collected_counts[tld] += 1
-            elif response.status_code == 404:
-                clean_domains.append(domain)
-                if tld in collected_counts: collected_counts[tld] += 1
-        except requests.exceptions.RequestException as e:
-            print(f"Network error getting report for {domain}: {e}")
+                    is_clean = True
+
+            if is_clean:
+                yield domain
+
+        except Exception as e:
+            # Silently fail, just don't yield the domain
+            if update_status_callback:
+                update_status_callback(f"Error checking {domain}: {e}")
+        
+        # Respect public API rate limit (4 requests per minute)
+        # A 16-second sleep ensures we stay under the limit.
         time.sleep(16)
-    return clean_domains 
