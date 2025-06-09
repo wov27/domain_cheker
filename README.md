@@ -1,73 +1,99 @@
 # Domain Checker
 
-This is a web-based tool to automate the process of finding valuable expired domains. It scrapes domain lists from `expireddomains.net`, checks their availability using WHOIS, and verifies their safety through VirusTotal, including a mandatory re-scan for up-to-date results.
+Инструмент для автоматического поиска и проверки доменных имен. Он получает списки недавно освободившихся доменов с [expireddomains.net](https://www.expireddomains.net/), проверяет их доступность через WHOIS и анализирует на вредоносное ПО с помощью VirusTotal API, используя эффективный последовательный подход.
 
-## Features
+## Основные возможности
 
-- **Web Interface**: A simple Flask-based UI to start and monitor the checking process.
-- **Domain Scraping**: Fetches domain lists from `expireddomains.net` using your personal filters and session cookies.
-- **Availability Check**: Uses `python-whois` to determine if domains are actually available for registration.
-- **Robust VirusTotal Check**:
-    - Leverages the VirusTotal API v3 to check for malicious content.
-    - **Forces a re-analysis** for every domain to ensure the report is fresh.
-    - Filters domains, allowing only those with 0 `malicious` and max 1 `suspicious` flags.
-- **Configuration Management**: All sensitive data (API keys, cookies) is stored in a `config.ini` file, which is excluded from version control.
+- **Сбор доменов**: Автоматически загружает списки доменов с `expireddomains.net` по заданным вами фильтрам (URL необходимо настроить в конфиге).
+- **Эффективная проверка**: Проверяет домены строго по одному. Если вам нужно найти 3 домена, работа остановится сразу после нахождения третьего, не тратя время на остальные.
+- **Проверка доступности**: Использует WHOIS для определения, свободен ли домен для регистрации.
+- **Анализ на VirusTotal**: Проверяет репутацию домена через VirusTotal API.
+- **Умный повторный анализ**: Если отчет VirusTotal устарел (старше 1 дня), инструмент принудительно запускает новый анализ, чтобы получить самые актуальные данные.
+- **Веб-интерфейс**: Удобный интерфейс на Flask для запуска, остановки и мониторинга процесса проверки в реальном времени.
+- **Копирование результатов**: Позволяет скопировать список найденных чистых доменов в один клик.
 
-## How to Use
+## Требования
 
-### 1. Prerequisites
-- Python 3.9+
-- Git
+- Python 3.8+
+- pip
 
-### 2. Setup
-1.  **Clone the repository:**
+## Установка
+
+1.  **Клонируйте репозиторий:**
     ```bash
     git clone https://github.com/wov27/domain_cheker.git
     cd domain_cheker
     ```
 
-2.  **Create and activate a virtual environment:**
-    ```bash
-    python3 -m venv venv
-    source venv/bin/activate
-    ```
+2.  **Создайте и активируйте виртуальное окружение:**
+    -   **macOS / Linux:**
+        ```bash
+        python3 -m venv venv
+        source venv/bin/activate
+        ```
+    -   **Windows:**
+        ```bash
+        python -m venv venv
+        .\venv\Scripts\activate
+        ```
 
-3.  **Install the dependencies:**
+3.  **Установите зависимости:**
     ```bash
     pip install -r requirements.txt
     ```
 
-4.  **Configure the application:**
-    - Rename `config.ini.example` to `config.ini` (or create `config.ini` manually).
-    - Open `config.ini` and fill in your details:
-        - `EXPIRED_DOMAINS_URL`: The URL from `expireddomains.net` that has your desired filters applied.
-        - `SESSION_ID`: Your `ExpiredDomainssessid` cookie value.
-        - `REME_COOKIE`: Your `reme` cookie value.
-        - `VIRUSTOTAL_API_KEY`: Your API key from VirusTotal.
-    
-    > **How to get cookies:**
-    > 1. Log in to `expireddomains.net`.
-    > 2. Open your browser's developer tools (F12).
-    > 3. Go to the "Application" (or "Storage") tab.
-    > 4. Find the cookies for the `expireddomains.net` domain and copy the values for `ExpiredDomainssessid` and `reme`.
+## Настройка
 
-### 3. Running the Application
-1.  **Start the Flask server:**
+Перед первым запуском необходимо создать и настроить конфигурационный файл.
+
+1.  **Создайте файл `config.ini`**, скопировав `config.ini.example`:
     ```bash
-    python app.py
-    ```
-    Or, if you have issues with the environment:
-    ```bash
-    venv/bin/python app.py
+    cp config.ini.example config.ini
     ```
 
-2.  **Open the web interface:**
-    - Navigate to `http://127.0.0.1:5001` in your web browser.
+2.  **Откройте `config.ini` и вставьте ваши данные:**
 
-3.  **Start the check:**
-    - Enter the desired number of domains for each TLD you want to find.
-    - Click the "Run Check" button.
-    - The status will be updated in real-time on the page. The process is long, primarily due to the mandatory 20-minute wait for VirusTotal re-scans.
+    ```ini
+    [VARS]
+    # 1. URL с expireddomains.net
+    # Зайдите на сайт, настройте фильтры (например, только .com, без цифр и дефисов)
+    # и скопируйте сюда получившийся URL из адресной строки браузера.
+    EXPIRED_DOMAINS_URL = "https://www.expireddomains.net/..."
+
+    # 2. Ваш API-ключ от VirusTotal
+    # Его можно найти в личном кабинете на сайте VirusTotal.
+    VIRUSTOTAL_API_KEY = "YOUR_VIRUSTOTAL_API_KEY"
+
+    # 3. Cookies для доступа к expireddomains.net
+    # Нужны для аутентификации. Их нужно взять из вашего браузера после логина на сайте.
+    # - Откройте инструменты разработчика (F12)
+    # - Перейдите на вкладку "Application" (Chrome) или "Storage" (Firefox)
+    # - Найдите раздел Cookies -> https://www.expireddomains.net
+    # - Скопируйте значения для ключей "ExpiredDomainssessid" и "reme".
+    # ВАЖНО: Если в значении cookie есть символ '%', его нужно удвоить (%%).
+    SESSION_ID = "YOUR_SESSION_ID"
+    REME_COOKIE = "YOUR_REME_COOKIE"
+    ```
+
+## Запуск
+
+После установки и настройки запустите веб-приложение:
+
+```bash
+python app.py
+```
+
+Сервер будет доступен по адресу `http://127.0.0.1:5001`. Просто откройте эту ссылку в вашем браузере.
+
+## Использование
+
+1.  Откройте `http://127.0.0.1:5001` в браузере.
+2.  Укажите желаемое количество доменов для поиска.
+3.  Нажмите кнопку **"Начать проверку"**.
+4.  Наблюдайте за процессом в блоке **"Статус"**.
+5.  Найденные чистые и свободные домены будут появляться в блоке **"Результаты"** в виде кликабельных ссылок на отчет VirusTotal.
+6.  Вы можете остановить проверку в любой момент кнопкой **"Стоп"**.
+7.  Когда нужные домены найдены, скопируйте их список с помощью кнопки **"Скопировать все"**.
 
 ## Project Structure
 

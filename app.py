@@ -1,9 +1,12 @@
 """
-This is the main Flask application file.
+The main Flask application file for the Domain Checker.
 
-It provides a web interface to trigger and monitor the domain checking process.
-The main logic is run in a background thread to avoid blocking the web server.
-State is managed in a simple global dictionary, suitable for a single-worker setup.
+This application provides a simple web interface to start, stop, and monitor a
+long-running domain checking task. The task is executed in a background thread
+to keep the UI responsive. The application's state (e.g., progress, results)
+is stored in a global dictionary, which is suitable for a single-user,
+single-worker deployment model. For production environments with multiple workers,
+a more robust shared state manager like Redis would be necessary.
 """
 import threading
 import time
@@ -15,168 +18,119 @@ from checker import TaskStoppedException
 
 app = Flask(__name__)
 
-# --- In-memory state management ---
-# This is a simple way to handle state for a single-worker server.
-# For multi-worker setups, a more robust solution like Redis would be needed.
+# --- In-memory State Management ---
 task_state = {
-    "status": "idle",  # "idle", "running", "done", "error"
-    "progress_message": "",
+    "status": "idle",  # "idle", "running", "stopping", "done", "error"
+    "progress_message": "Готов к работе.",
     "results": [],
-    "target_count": 0, # To store the requested number for the current/last run
-    "stats": {
-        "scraped": 0,
-        "available": 0,
-        "clean": 0
-    }
+    "target_count": 0,
+    "stats": {"clean": 0}
 }
-
-def update_and_check_stop(message):
-    """A wrapper for updating status that also checks if a stop is requested."""
-    if task_state['status'] == 'stopping':
-        raise TaskStoppedException("Task stopped by user.")
-    task_state['progress_message'] = message
 
 def run_checker_task(target_domain_count):
     """
-    The main worker function that executes the domain checking pipeline in a background thread.
+    The main worker function that runs the domain checking process.
 
-    This function orchestrates the entire process:
-    1. Reads configuration from config.ini.
-    2. Scrapes domains from expireddomains.net.
-    3. Checks domain availability via WHOIS.
-    4. Triggers a re-analysis on VirusTotal.
-    5. Waits for the analysis to complete.
-    6. Fetches the final reports and filters for clean domains.
-
-    It updates the global `task_state` dictionary to reflect its progress, which is
-    then served to the frontend via the /status endpoint.
+    This function acts as a consumer for the `domain_check_generator` from the `checker` module.
+    It initializes the application state, reads the necessary configuration, and then
+    iterates over the generator. For each domain yielded by the generator, it updates
+    the global `task_state`. It also handles exceptions, including user-initiated stops
+    and other unexpected errors, ensuring the application state is always consistent.
 
     Args:
-        target_domain_count (int): The total number of clean domains the user wants to find.
+        target_domain_count (int): The number of clean domains the user wants to find.
     """
-    print(f"\n--- DEBUG: `run_checker_task` started with target_domain_count: {target_domain_count} ---\n")
     global task_state
-    
+
+    task_state.update({
+        "status": "running", "progress_message": "Инициализация...",
+        "results": [], "stats": {"clean": 0}, "target_count": target_domain_count
+    })
+
+    def update_status_callback(message):
+        task_state['progress_message'] = message
+
+    def check_stop_flag():
+        return task_state['status'] == 'stopping'
+
     try:
-        # --- Reset state and read config ---
-        task_state.update({
-            "status": "running", 
-            "progress_message": "Step 1/5: Starting...",
-            "results": [],
-            "stats": {"scraped": 0, "available": 0, "clean": 0},
-            "target_count": target_domain_count
-        })
-        
-        # --- Read config ---
-        # Prioritize environment variables for production (e.g., on Render)
-        # Fall back to config.ini for local development
         if os.getenv('VIRUSTOTAL_API_KEY'):
-            expired_domains_url = os.getenv('EXPIRED_DOMAINS_URL')
-            api_key = os.getenv('VIRUSTOTAL_API_KEY')
+            # Production environment (e.g., Render)
+            cfg_get = os.environ.get
+            expired_domains_url = cfg_get('EXPIRED_DOMAINS_URL')
+            api_key = cfg_get('VIRUSTOTAL_API_KEY')
             session_cookies = {
-                "ExpiredDomainssessid": os.getenv('SESSION_ID'),
-                "reme": os.getenv('REME_COOKIE')
+                "ExpiredDomainssessid": cfg_get('SESSION_ID'), "reme": cfg_get('REME_COOKIE')
             }
         else:
+            # Local development
             config = configparser.ConfigParser()
             config.read('config.ini')
             cfg = config['VARS']
-            
-            expired_domains_url = cfg['EXPIRED_DOMAINS_URL']
-            api_key = cfg['VIRUSTOTAL_API_KEY']
+            cfg_get = cfg.get
+            expired_domains_url = cfg_get('EXPIRED_DOMAINS_URL')
+            api_key = cfg_get('VIRUSTOTAL_API_KEY')
             session_cookies = {
-                "ExpiredDomainssessid": cfg['SESSION_ID'],
-                "reme": cfg['REME_COOKIE']
+                "ExpiredDomainssessid": cfg_get('SESSION_ID'), "reme": cfg_get('REME_COOKIE')
             }
 
-        if not all([expired_domains_url, api_key, session_cookies["ExpiredDomainssessid"], session_cookies["reme"]]) or \
-           'YOUR_' in api_key or 'YOUR_' in session_cookies["ExpiredDomainssessid"]:
-             raise Exception("Configuration is missing or incomplete. Please set environment variables or fill in config.ini.")
+        if not all([expired_domains_url, session_cookies["ExpiredDomainssessid"], session_cookies["reme"]]):
+             raise Exception("Конфигурация не заполнена. Укажите URL и cookies в config.ini или переменных окружения.")
 
-        # --- Stage 1: Get Expired Domains ---
-        update_and_check_stop("Stage 1/5: Scraping initial domain list...")
-        scraped_domains = checker.get_expired_domains(expired_domains_url, session_cookies)
-        task_state["stats"]["scraped"] = len(scraped_domains)
-        if not scraped_domains:
-            task_state["progress_message"] = "Could not find any domains with the specified filters."
-            task_state["status"] = "done"
-            return
-        
-        # --- Stage 2: Check Availability (WHOIS) ---
-        available_domains = checker.check_domains_availability(scraped_domains, update_status_callback=update_and_check_stop)
-        task_state["stats"]["available"] = len(available_domains)
-        if not available_domains:
-            raise Exception("No available domains found after WHOIS check.")
-            
-        # --- Stage 3: Request Re-analysis ---
-        checker.reanalyze_domains_vt_v3(available_domains, api_key, update_status_callback=update_and_check_stop)
-        
-        # --- Stage 4: Wait ---
-        wait_minutes = 3
-        for i in range(wait_minutes * 60, 0, -1):
-            update_and_check_stop(f"Stage 4/5: Waiting for scans to complete... ({i//60}m {i%60}s)")
-            time.sleep(1)
-            
-        # --- Stage 5: Final Check (and stop early if enough are found) ---
+        domain_generator = checker.domain_check_generator(
+            url=expired_domains_url, cookies=session_cookies, vt_api_key=api_key,
+            target_domain_count=target_domain_count,
+            update_status_callback=update_status_callback,
+            check_stop_flag=check_stop_flag
+        )
+
         clean_domains_found = []
-        domain_generator = checker.yield_clean_domains_vt_v3(available_domains, api_key, update_status_callback=update_and_check_stop)
-
         for domain in domain_generator:
-            clean_domains_found.append(domain)
-            task_state["stats"]["clean"] = len(clean_domains_found)
+            result_obj = {
+                "name": domain,
+                "vt_link": f"https://www.virustotal.com/gui/domain/{domain}"
+            }
+            clean_domains_found.append(result_obj)
             
-            # Update progress with the new find
-            # Re-use the update_and_check_stop function to also check for stop requests here
-            update_and_check_stop(f"Found {len(clean_domains_found)}/{target_domain_count} clean domains. Last find: {domain}")
+            task_state["results"] = clean_domains_found
+            task_state["stats"]["clean"] = len(clean_domains_found)
+            update_status_callback(f"Найден чистый домен: {domain} ({len(clean_domains_found)}/{target_domain_count})")
+            time.sleep(1)
 
-            if len(clean_domains_found) >= target_domain_count:
-                task_state["progress_message"] = f"Found {len(clean_domains_found)} matching domains. Stopping."
-                break
-        
-        task_state["results"] = clean_domains_found
-        task_state["status"] = "done"
-        if not task_state["progress_message"].startswith("Found"):
-             task_state["progress_message"] = "Process finished successfully."
+        if task_state['status'] == 'running':
+            task_state['status'] = 'done'
 
     except TaskStoppedException:
-        task_state["status"] = "idle"
-        task_state["progress_message"] = "Task stopped by user."
+        task_state['status'] = 'idle'
+        task_state['progress_message'] = 'Проверка остановлена пользователем.'
+
     except Exception as e:
+        print(f"Критическая ошибка в фоновой задаче: {e}")
         task_state["status"] = "error"
-        task_state["progress_message"] = f"An error occurred: {str(e)}"
+        task_state["progress_message"] = f"Критическая ошибка: {e}"
 
 @app.route('/')
 def index():
-    """Renders the main page of the application."""
+    """Renders the main page of the application (index.html)."""
     return render_template('index.html')
 
 @app.route('/run', methods=['POST'])
 def run_task():
-    """Starts the background checker task."""
-    print("\n--- DEBUG: /run endpoint triggered ---")
-    target_count_str = request.form.get('domain_count')
-    print(f"--- DEBUG: Raw 'domain_count' from form: '{target_count_str}' (type: {type(target_count_str)}) ---")
+    """
+    Starts the background domain checking task.
     
-    try:
-        target_count = int(target_count_str)
-    except (ValueError, TypeError):
-        print("--- DEBUG: Could not parse string to int, defaulting to 15. ---")
-        target_count = 15
-
-    print(f"--- DEBUG: Final target_count to be used: {target_count} ---\n")
-
-    global task_state
+    It retrieves the desired number of domains from the form, ensures no other
+    task is running, and then starts `run_checker_task` in a new thread.
+    """
     if task_state['status'] == 'running':
         return redirect(url_for('index'))
+        
+    try:
+        target_count = int(request.form.get('domain_count', 15))
+    except (ValueError, TypeError):
+        target_count = 15
     
-    # Reset state and start the task
-    task_state.update({
-        "status": "running", 
-        "progress_message": "Step 1/5: Starting...",
-        "results": [],
-        "stats": {"scraped": 0, "available": 0, "clean": 0},
-        "target_count": target_count
-    })
+    task_state['status'] = 'running'
     
     thread = threading.Thread(target=run_checker_task, args=(target_count,))
     thread.start()
@@ -186,24 +140,26 @@ def run_task():
 @app.route('/status')
 def status():
     """
-    Provides the current status of the background task.
+    Provides the current status of the background task as JSON.
 
-    This endpoint is polled by the frontend using JavaScript to update the UI
-    with the latest progress message and results.
-
-    Returns:
-        JSON: A JSON object containing the current task state.
+    This endpoint is polled by the frontend JavaScript to dynamically update the UI
+    with the latest progress messages, results, and overall application state.
     """
     return jsonify(task_state)
 
 @app.route('/stop', methods=['POST'])
 def stop_task():
-    """Endpoint to request a stop for the running task."""
+    """
+    Requests a stop for the currently running task.
+    
+    It sets the status to 'stopping', which is detected by the `check_stop_flag`
+    callback inside the generator, causing a `TaskStoppedException` to be raised.
+    """
     if task_state['status'] == 'running':
         task_state['status'] = 'stopping'
     return jsonify({"message": "Stop request received."})
 
 if __name__ == '__main__':
-    # It's recommended to run Flask apps using a production server like Gunicorn,
-    # but this is fine for local use.
+    # For local development, run the app with Flask's built-in server in debug mode.
+    # For production, it's recommended to use a WSGI server like Gunicorn.
     app.run(debug=True, host='0.0.0.0', port=5001) 
