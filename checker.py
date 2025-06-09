@@ -65,7 +65,7 @@ def check_domains_availability(domains, update_status_callback=None):
         try:
             if update_status_callback:
                 # This call will raise TaskStoppedException if stop is requested
-                update_status_callback(f"Checking WHOIS for {domain} ({i+1}/{len(domains)})")
+                update_status_callback(f"Stage 2/5: Filtering available domains via WHOIS... ({i+1}/{len(domains)})")
             
             time.sleep(1)
             w = whois.whois(domain)
@@ -100,12 +100,14 @@ def reanalyze_domains_vt_v3(domains, api_key, update_status_callback=None):
         return
     headers = {"x-apikey": api_key}
     one_day_ago = datetime.now(timezone.utc) - timedelta(days=1)
+    domains_to_rescan = []
 
+    # First, determine which domains actually need re-scanning
     for i, domain in enumerate(domains):
-        should_rescan = True
         if update_status_callback:
-            update_status_callback(f"Checking report age for: {domain} ({i+1}/{len(domains)})")
+            update_status_callback(f"Stage 3/5: Checking for recent scans... ({i+1}/{len(domains)})")
         
+        should_rescan = True
         get_url = f"{VT_API_V3_BASE_URL}/domains/{domain}"
         
         try:
@@ -128,17 +130,27 @@ def reanalyze_domains_vt_v3(domains, api_key, update_status_callback=None):
             
             # Now, based on the flag, perform the rescan
             if should_rescan:
-                if update_status_callback:
-                    update_status_callback(f"Report is old/missing, requesting re-scan for {domain}...")
-                post_url = f"{VT_API_V3_BASE_URL}/domains/{domain}/analyse"
-                requests.post(post_url, headers=headers)
-                time.sleep(16)
+                domains_to_rescan.append(domain)
             else:
                 if update_status_callback:
                     update_status_callback(f"Report for {domain} is fresh, skipping re-scan.")
 
         except requests.exceptions.RequestException as e:
             print(f"Network error during re-analysis check for {domain}: {e}")
+
+    # Now, request scans only for the ones that need it
+    scans_requested = 0
+    for domain in domains_to_rescan:
+        scans_requested += 1
+        if update_status_callback:
+            update_status_callback(f"Stage 3/5: Requesting new scans... ({scans_requested}/{len(domains_to_rescan)})")
+        
+        post_url = f"{VT_API_V3_BASE_URL}/domains/{domain}/analyse"
+        try:
+            requests.post(post_url, headers=headers)
+            time.sleep(16)
+        except requests.exceptions.RequestException as e:
+            print(f"Network error during re-analysis for {domain}: {e}")
 
 def yield_clean_domains_vt_v3(domains, api_key, update_status_callback=None):
     """
@@ -166,7 +178,7 @@ def yield_clean_domains_vt_v3(domains, api_key, update_status_callback=None):
     
     for i, domain in enumerate(domains):
         if update_status_callback:
-            update_status_callback(f"Step 5/5: Final check for {domain} ({i+1}/{len(domains)})")
+            update_status_callback(f"Stage 5/5: Getting final reports... (Checking {i+1}/{len(domains)})")
 
         get_url = f"{VT_API_V3_BASE_URL}/domains/{domain}"
         

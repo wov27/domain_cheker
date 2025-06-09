@@ -94,7 +94,7 @@ def run_checker_task(target_domain_count):
              raise Exception("Configuration is missing or incomplete. Please set environment variables or fill in config.ini.")
 
         # --- Stage 1: Get Expired Domains ---
-        update_and_check_stop("Step 1/5: Scraping domains from expireddomains.net...")
+        update_and_check_stop("Stage 1/5: Scraping initial domain list...")
         scraped_domains = checker.get_expired_domains(expired_domains_url, session_cookies)
         task_state["stats"]["scraped"] = len(scraped_domains)
         if not scraped_domains:
@@ -114,7 +114,7 @@ def run_checker_task(target_domain_count):
         # --- Stage 4: Wait ---
         wait_minutes = 3
         for i in range(wait_minutes * 60, 0, -1):
-            update_and_check_stop(f"Step 4/5: Waiting for VirusTotal to re-scan... Time left: {i//60}m {i%60}s")
+            update_and_check_stop(f"Stage 4/5: Waiting for scans to complete... ({i//60}m {i%60}s)")
             time.sleep(1)
             
         # --- Stage 5: Final Check (and stop early if enough are found) ---
