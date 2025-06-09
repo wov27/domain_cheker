@@ -9,6 +9,10 @@ import time
 import whois
 from datetime import datetime, timedelta, timezone
 
+# A custom exception to signal a user-requested stop
+class TaskStoppedException(Exception):
+    pass
+
 # --- Constants ---
 VT_API_V3_BASE_URL = "https://www.virustotal.com/api/v3"
 
@@ -58,17 +62,23 @@ def check_domains_availability(domains, update_status_callback=None):
     """
     available_domains = []
     for i, domain in enumerate(domains):
-        if update_status_callback:
-            update_status_callback(f"Checking WHOIS for {domain} ({i+1}/{len(domains)})")
-        time.sleep(1)
         try:
+            if update_status_callback:
+                # This call will raise TaskStoppedException if stop is requested
+                update_status_callback(f"Checking WHOIS for {domain} ({i+1}/{len(domains)})")
+            
+            time.sleep(1)
             w = whois.whois(domain)
-            if not w.creation_date:
-                available_domains.append(domain)
-        except whois.parser.PywhoisError:
-            available_domains.append(domain)
-        except Exception as e:
-            print(f"Error checking WHOIS for {domain}: {e}")
+            # Check if domain is available
+            if not w.status or 'available' in str(w.status).lower():
+                 available_domains.append(domain)
+        except TaskStoppedException:
+            # Re-raise to signal the main task to stop
+            raise
+        except Exception:
+            # This can happen for various reasons (rate limits, TLD not supported, etc.)
+            # We'll just assume it's not available and move on.
+            pass
     return available_domains
 
 def reanalyze_domains_vt_v3(domains, api_key, update_status_callback=None):

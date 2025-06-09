@@ -11,12 +11,9 @@ import os
 import configparser
 from flask import Flask, render_template, request, jsonify, redirect, url_for
 import checker
+from checker import TaskStoppedException
 
 app = Flask(__name__)
-
-# A custom exception to signal a user-requested stop
-class TaskStoppedException(Exception):
-    pass
 
 # --- In-memory state management ---
 # This is a simple way to handle state for a single-worker server.
@@ -56,6 +53,7 @@ def run_checker_task(target_domain_count):
     Args:
         target_domain_count (int): The total number of clean domains the user wants to find.
     """
+    print(f"\n--- DEBUG: `run_checker_task` started with target_domain_count: {target_domain_count} ---\n")
     global task_state
     
     try:
@@ -144,11 +142,17 @@ def index():
 @app.route('/run', methods=['POST'])
 def run_task():
     """Starts the background checker task."""
-    target_count_str = request.form.get('domain_count', '15')
+    print("\n--- DEBUG: /run endpoint triggered ---")
+    target_count_str = request.form.get('domain_count')
+    print(f"--- DEBUG: Raw 'domain_count' from form: '{target_count_str}' (type: {type(target_count_str)}) ---")
+    
     try:
         target_count = int(target_count_str)
     except (ValueError, TypeError):
+        print("--- DEBUG: Could not parse string to int, defaulting to 15. ---")
         target_count = 15
+
+    print(f"--- DEBUG: Final target_count to be used: {target_count} ---\n")
 
     global task_state
     if task_state['status'] == 'running':
