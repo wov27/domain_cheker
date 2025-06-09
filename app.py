@@ -14,6 +14,10 @@ import checker
 
 app = Flask(__name__)
 
+# A custom exception to signal a user-requested stop
+class TaskStoppedException(Exception):
+    pass
+
 # --- In-memory state management ---
 # This is a simple way to handle state for a single-worker server.
 # For multi-worker setups, a more robust solution like Redis would be needed.
@@ -27,6 +31,12 @@ task_state = {
         "clean": 0
     }
 }
+
+def update_and_check_stop(message):
+    """A wrapper for updating status that also checks if a stop is requested."""
+    if task_state['status'] == 'stopping':
+        raise TaskStoppedException("Task stopped by user.")
+    task_state['progress_message'] = message
 
 def run_checker_task(target_domain_count):
     """
@@ -49,6 +59,14 @@ def run_checker_task(target_domain_count):
     global task_state
     
     try:
+        # --- Reset state and read config ---
+        task_state.update({
+            "status": "running", 
+            "progress_message": "Step 1/5: Starting...",
+            "results": [],
+            "stats": {"scraped": 0, "available": 0, "clean": 0}
+        })
+        
         # --- Read config ---
         # Prioritize environment variables for production (e.g., on Render)
         # Fall back to config.ini for local development
@@ -75,41 +93,45 @@ def run_checker_task(target_domain_count):
            'YOUR_' in api_key or 'YOUR_' in session_cookies["ExpiredDomainssessid"]:
              raise Exception("Configuration is missing or incomplete. Please set environment variables or fill in config.ini.")
 
-        # --- Stage 1: Scrape domains ---
-        task_state["progress_message"] = "Step 1/5: Scraping domains from expireddomains.net..."
+        # --- Stage 1: Get Expired Domains ---
+        update_and_check_stop("Step 1/5: Scraping domains from expireddomains.net...")
         scraped_domains = checker.get_expired_domains(expired_domains_url, session_cookies)
         task_state["stats"]["scraped"] = len(scraped_domains)
         if not scraped_domains:
-            raise Exception("Failed to scrape any domains.")
+            task_state["progress_message"] = "Could not find any domains with the specified filters."
+            task_state["status"] = "done"
+            return
         
-        # --- Stage 2: Check WHOIS ---
-        task_state["progress_message"] = "Step 2/5: Checking domain availability via WHOIS..."
-        available_domains = checker.check_domains_availability(scraped_domains)
+        # --- Stage 2: Check Availability (WHOIS) ---
+        available_domains = checker.check_domains_availability(scraped_domains, update_status_callback=update_and_check_stop)
         task_state["stats"]["available"] = len(available_domains)
         if not available_domains:
             raise Exception("No available domains found after WHOIS check.")
             
         # --- Stage 3: Request Re-analysis ---
-        checker.reanalyze_domains_vt_v3(available_domains, api_key, lambda msg: task_state.update({"progress_message": f"Step 3/5: {msg}"}))
+        checker.reanalyze_domains_vt_v3(available_domains, api_key, update_status_callback=update_and_check_stop)
         
         # --- Stage 4: Wait ---
         wait_minutes = 3
         for i in range(wait_minutes * 60, 0, -1):
-            task_state["progress_message"] = f"Step 4/5: Waiting for VirusTotal to re-scan... Time left: {i//60}m {i%60}s"
+            update_and_check_stop(f"Step 4/5: Waiting for VirusTotal to re-scan... Time left: {i//60}m {i%60}s")
             time.sleep(1)
             
         # --- Stage 5: Final Check ---
         target_counts = {'info': target_domain_count//3, 'top': target_domain_count//3, 'xyz': target_domain_count - 2*(target_domain_count//3)}
-        final_domains = checker.get_clean_domains_vt_v3(available_domains, api_key, target_counts, lambda msg: task_state.update({"progress_message": f"Step 5/5: {msg}"}))
-        task_state["stats"]["clean"] = len(final_domains)
+        clean_domains = checker.get_clean_domains_vt_v3(available_domains, api_key, target_counts, update_status_callback=update_and_check_stop)
+        task_state["stats"]["clean"] = len(clean_domains)
 
-        task_state["results"] = final_domains
+        task_state["results"] = clean_domains
         task_state["status"] = "done"
-        task_state["progress_message"] = "All steps completed successfully!"
+        task_state["progress_message"] = "Process finished successfully."
 
+    except TaskStoppedException:
+        task_state["status"] = "idle"
+        task_state["progress_message"] = "Task stopped by user."
     except Exception as e:
         task_state["status"] = "error"
-        task_state["progress_message"] = f"An error occurred: {e}"
+        task_state["progress_message"] = f"An error occurred: {str(e)}"
 
 @app.route('/')
 def index():
@@ -157,6 +179,13 @@ def status():
         JSON: A JSON object containing the current task state.
     """
     return jsonify(task_state)
+
+@app.route('/stop', methods=['POST'])
+def stop_task():
+    """Endpoint to request a stop for the running task."""
+    if task_state['status'] == 'running':
+        task_state['status'] = 'stopping'
+    return jsonify({"message": "Stop request received."})
 
 if __name__ == '__main__':
     # It's recommended to run Flask apps using a production server like Gunicorn,

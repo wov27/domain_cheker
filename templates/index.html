@@ -38,6 +38,7 @@
                         <input type="number" class="form-control" id="domain_count" name="domain_count" value="15" min="3" step="3">
                     </div>
                     <button id="run-button" type="submit" class="btn btn-primary">Start Scan</button>
+                    <button id="stop-button" type="button" class="btn btn-danger" style="display: none;">Stop Scan</button>
                 </form>
             </div>
         </div>
@@ -76,6 +77,7 @@
     <script>
         const runForm = document.getElementById('run-form');
         const runButton = document.getElementById('run-button');
+        const stopButton = document.getElementById('stop-button');
         const statusContainer = document.getElementById('status-container');
         const statusText = document.getElementById('status-text');
         const progressContainer = document.getElementById('progress-message-container');
@@ -92,39 +94,45 @@
                     statusText.textContent = data.status;
 
                     if (data.status === 'running') {
+                        runButton.disabled = true;
+                        stopButton.style.display = 'inline-block';
                         progressContainer.style.display = 'block';
                         progressText.textContent = data.progress_message;
                         resultsContainer.style.display = 'none';
-                        runButton.disabled = true;
                     } else {
-                        progressContainer.style.display = 'none';
                         runButton.disabled = false;
-                    }
+                        stopButton.style.display = 'none';
+                        progressContainer.style.display = 'none';
 
-                    if (data.status === 'done' || data.status === 'error') {
-                        resultsContainer.style.display = 'block';
-                        resultsList.innerHTML = '';
-                        statsSummary.innerHTML = '';
+                        if (data.status === 'done' || data.status === 'error') {
+                            resultsContainer.style.display = 'block';
+                            
+                            // Display final message instead of progress
+                            progressContainer.style.display = 'block';
+                            progressText.textContent = data.progress_message;
 
-                        if(data.status === 'done') {
+                            // Display stats
+                            const stats = data.stats;
                             statsSummary.innerHTML = `
-                                <p><strong>Scraped from expireddomains.net:</strong> ${data.stats.scraped} domains</p>
-                                <p><strong>Found available (WHOIS):</strong> ${data.stats.available} domains</p>
-                                <p><strong>Passed VirusTotal check:</strong> ${data.stats.clean} domains</p>
+                                <p><strong>Scan Summary:</strong></p>
+                                <ul>
+                                    <li>Domains Scraped: ${stats.scraped}</li>
+                                    <li>Domains Available (WHOIS): ${stats.available}</li>
+                                    <li>Domains Clean (VirusTotal): ${stats.clean}</li>
+                                </ul>
                             `;
-                            if (data.results.length > 0) {
+
+                            // Display results
+                            resultsList.innerHTML = '';
+                            if (data.results && data.results.length > 0) {
                                 data.results.forEach(domain => {
                                     const li = document.createElement('li');
                                     li.textContent = domain;
                                     resultsList.appendChild(li);
                                 });
-                            } else {
-                                resultsList.innerHTML = '<li>No domains passed all checks.</li>';
+                            } else if (data.status === 'done') {
+                                resultsList.innerHTML = '<li>No clean domains found.</li>';
                             }
-                        }
-
-                        if (data.status === 'error') {
-                             statsSummary.innerHTML = `<p style="color: red;">${data.progress_message}</p>`;
                         }
                     }
                 })
@@ -143,10 +151,19 @@
             });
         });
 
-        // Poll every 3 seconds
-        setInterval(updateStatus, 3000);
-        // Immediate update on page load
-        document.addEventListener('DOMContentLoaded', updateStatus);
+        stopButton.addEventListener('click', function() {
+            fetch('/stop', {
+                method: 'POST'
+            }).then(() => {
+                // The updateStatus interval will handle the UI change
+                console.log("Stop request sent.");
+                stopButton.disabled = true; // Prevent multiple clicks
+            });
+        });
+
+        // Initial status update and polling
+        updateStatus();
+        setInterval(updateStatus, 3000); // Poll every 3 seconds
     </script>
 </body>
 </html> 

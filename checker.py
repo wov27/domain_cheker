@@ -41,7 +41,7 @@ def get_expired_domains(url, cookies):
         print(f"Failed to fetch page from expireddomains.net. Error: {e}")
         return []
 
-def check_domains_availability(domains):
+def check_domains_availability(domains, update_status_callback=None):
     """
     Checks the availability of a list of domains using WHOIS lookups.
 
@@ -50,12 +50,16 @@ def check_domains_availability(domains):
 
     Args:
         domains (list): A list of domain names (str) to check.
+        update_status_callback (function, optional): A callback function to update
+            the status on the frontend. Defaults to None.
 
     Returns:
         list: A list of domain names (str) that are considered available.
     """
     available_domains = []
-    for domain in domains:
+    for i, domain in enumerate(domains):
+        if update_status_callback:
+            update_status_callback(f"Checking WHOIS for {domain} ({i+1}/{len(domains)})")
         time.sleep(1)
         try:
             w = whois.whois(domain)
