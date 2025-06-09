@@ -143,29 +143,18 @@ def index():
 
 @app.route('/run', methods=['POST'])
 def run_task():
-    """
-    Starts the domain checking task in a background thread.
+    """Starts the background checker task."""
+    target_count_str = request.form.get('domain_count', '15')
+    try:
+        target_count = int(target_count_str)
+    except (ValueError, TypeError):
+        target_count = 15
 
-    It's triggered by a POST request from the main page. It resets the task state,
-    creates and starts a new daemon thread to run the `run_checker_task` function,
-    and then redirects back to the main page. If a task is already running,
-    it does nothing.
-    """
     global task_state
-    if task_state["status"] == "running":
+    if task_state['status'] == 'running':
         return redirect(url_for('index'))
-
-    target_count = int(request.form.get('domain_count', 15))
-    
-    task_state = {
-        "status": "running", 
-        "progress_message": "Task starting...", 
-        "results": [],
-        "stats": {"scraped": 0, "available": 0, "clean": 0}
-    }
     
     thread = threading.Thread(target=run_checker_task, args=(target_count,))
-    thread.daemon = True
     thread.start()
     
     return redirect(url_for('index'))
