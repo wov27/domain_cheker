@@ -43,7 +43,6 @@ def run_parallel_check(url, cookies, vt_api_key, target_domain_count, max_worker
     """
     status_manager.set_progress_message("Этап 1/3: Получение списка доменов...")
     
-    # Simple callback for get_expired_domains to report errors
     def error_callback(msg):
         status_manager.set_progress_message(msg)
 
@@ -56,7 +55,6 @@ def run_parallel_check(url, cookies, vt_api_key, target_domain_count, max_worker
     status_manager.set_progress_message(f"Найдено {len(all_domains)} доменов. Запуск {max_workers} потоков...")
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        # Create a future for each domain check
         future_to_domain = {
             executor.submit(
                 _check_single_domain, domain, cookies, vt_api_key, status_manager
@@ -65,7 +63,6 @@ def run_parallel_check(url, cookies, vt_api_key, target_domain_count, max_worker
 
         for future in as_completed(future_to_domain):
             if status_manager.is_stopping() or status_manager.get_found_count() >= target_domain_count:
-                # Cancel pending futures
                 for f in future_to_domain:
                     f.cancel()
                 executor.shutdown(wait=False, cancel_futures=True)
@@ -75,35 +72,23 @@ def run_parallel_check(url, cookies, vt_api_key, target_domain_count, max_worker
             try:
                 is_clean = future.result()
                 if is_clean:
-                    # add_clean_domain is thread-safe and respects target_count
-                    if status_manager.add_clean_domain(domain):
-                        status_manager.set_progress_message(f"Найден чистый домен: {domain}")
+                    status_manager.add_clean_domain(domain, f"https://www.virustotal.com/gui/domain/{domain}")
                 
             except Exception as e:
                 status_manager.update_domain_status(domain, f"Ошибка: {e}")
             finally:
-                # Clean up the in-progress list
                 status_manager.remove_domain_from_progress(domain)
 
 
 def _check_single_domain(domain, cookies, vt_api_key, status_manager):
     """
     Performs all checks for a single domain. Designed to be run in a thread.
-    
-    Args:
-        domain (str): The domain to check.
-        cookies (dict): Auth cookies.
-        vt_api_key (str): VT API key.
-        status_manager (StatusManager): The status manager instance.
-
-    Returns:
-        bool: True if the domain is clean and available, False otherwise.
-    
-    Raises:
-        Exception: Propagates exceptions from checker functions.
     """
     if status_manager.is_stopping():
         raise TaskStoppedException()
+
+    # Add a small delay to avoid overwhelming WHOIS servers
+    time.sleep(1)
         
     # 1. WHOIS Check
     status_manager.update_domain_status(domain, "Проверка WHOIS...")
@@ -133,14 +118,6 @@ def _check_single_domain(domain, cookies, vt_api_key, status_manager):
 def get_expired_domains(url, cookies, update_status):
     """
     Fetches domains from expireddomains.net.
-
-    Args:
-        url (str): The URL to scrape.
-        cookies (dict): The authentication cookies.
-        update_status (function): Callback to report errors.
-
-    Returns:
-        list: A list of domain names, or an empty list on failure.
     """
     headers = {
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36',
@@ -174,21 +151,28 @@ def get_expired_domains(url, cookies, update_status):
 def is_domain_available(domain, status_manager):
     """
     Checks if a single domain is available via WHOIS.
+    This version is more robust against network errors.
     """
-    # No need to report granular status here, _check_single_domain does it.
     try:
-        time.sleep(1) # Keep sleep to avoid rate-limiting
         w = whois.whois(domain)
+        # Domain is considered available if it has no status or no creation date.
+        # This logic might need adjustment depending on the TLD.
         return not w.status or not w.creation_date
     except whois.parser.PywhoisError:
+        # This error often means the domain is not registered.
         return True
     except Exception as e:
-        # Propagate the error to be caught in the main loop
-        raise Exception(f"WHOIS-ошибка: {e}")
+        # Catch other errors (like network issues) and log them.
+        # Treat as "not available" to be safe.
+        status_manager.update_domain_status(domain, f"WHOIS-ошибка: {type(e).__name__}")
+        print(f"WHOIS check for {domain} failed: {e}")
+        return False
 
 def verify_domain_with_vt(domain, api_key, status_manager):
     """
     Performs a full, robust VirusTotal verification for a single domain.
+    This function now uses polling to wait for analysis results, which is
+    more efficient than a fixed-timer wait.
     """
     def _is_report_clean(report):
         stats = report.get('data', {}).get('attributes', {}).get('last_analysis_stats', {})
@@ -200,13 +184,13 @@ def verify_domain_with_vt(domain, api_key, status_manager):
         return True, None # Default to "clean" if VT is not configured
 
     headers = {"x-apikey": api_key}
-    get_url = f"{VT_API_V3_BASE_URL}/domains/{domain}"
+    domain_report_url = f"{VT_API_V3_BASE_URL}/domains/{domain}"
     
     try:
         if status_manager.is_stopping(): raise TaskStoppedException()
         status_manager.update_domain_status(domain, "VT: запрос отчета...")
-        time.sleep(16) # Adhere to public API rate limits
-        response = requests.get(get_url, headers=headers, timeout=30)
+        time.sleep(16) # Adhere to public API rate limits (4 req/min)
+        response = requests.get(domain_report_url, headers=headers, timeout=30)
 
         if response.status_code == 401:
             return False, "Ошибка аутентификации VirusTotal."
@@ -225,22 +209,44 @@ def verify_domain_with_vt(domain, api_key, status_manager):
         if needs_rescan:
             if status_manager.is_stopping(): raise TaskStoppedException()
             status_manager.update_domain_status(domain, "VT: запуск повторного анализа...")
-            post_url = f"{VT_API_V3_BASE_URL}/domains/{domain}/analyse"
+            rescan_url = f"{VT_API_V3_BASE_URL}/domains/{domain}/analyse"
             time.sleep(16)
-            rescan_response = requests.post(post_url, headers=headers, timeout=30)
-            if rescan_response.status_code == 401:
-                return False, "Ошибка аутентификации VirusTotal."
+            rescan_response = requests.post(rescan_url, headers=headers, timeout=30)
 
-            status_manager.update_domain_status(domain, "VT: ожидание (90 сек)...")
-            # Check for stop signal periodically while waiting
-            for _ in range(30):
+            if rescan_response.status_code != 200:
+                 return False, f"Ошибка при запуске анализа (код: {rescan_response.status_code})."
+
+            analysis_id = rescan_response.json().get('data', {}).get('id')
+            if not analysis_id:
+                return False, "Не удалось получить ID для нового анализа."
+            
+            analysis_status_url = f"{VT_API_V3_BASE_URL}/analyses/{analysis_id}"
+            
+            # Polling loop to check analysis status
+            max_wait_time = 240 # 4 minutes
+            poll_interval = 15  # 15 seconds
+            elapsed_time = 0
+
+            while elapsed_time < max_wait_time:
                 if status_manager.is_stopping(): raise TaskStoppedException()
-                time.sleep(3)
-        
+                
+                status_manager.update_domain_status(domain, f"VT: ожидание ({int(elapsed_time)}/{max_wait_time}s)")
+                time.sleep(poll_interval)
+                elapsed_time += poll_interval
+
+                status_response = requests.get(analysis_status_url, headers=headers, timeout=30)
+                if status_response.status_code == 200:
+                    status = status_response.json().get('data',{}).get('attributes',{}).get('status')
+                    if status == 'completed':
+                        status_manager.update_domain_status(domain, "VT: анализ завершен.")
+                        break 
+            else:
+                return False, "Анализ VT занял слишком много времени."
+
         if status_manager.is_stopping(): raise TaskStoppedException()
         status_manager.update_domain_status(domain, "VT: получение финального отчета...")
         time.sleep(16)
-        final_response = requests.get(get_url, headers=headers, timeout=30)
+        final_response = requests.get(domain_report_url, headers=headers, timeout=30)
         
         if final_response.status_code != 200:
             return False, f"Не удалось получить отчет (код: {final_response.status_code})."
@@ -248,9 +254,12 @@ def verify_domain_with_vt(domain, api_key, status_manager):
         final_report = final_response.json()
         return _is_report_clean(final_report), None
 
+    except TaskStoppedException:
+        raise
     except requests.exceptions.RequestException as e:
         return False, f"Сетевая ошибка VT: {e}"
     except requests.exceptions.JSONDecodeError:
         return False, "Ошибка обработки ответа VT."
     except Exception as e:
+        print(f"Неожиданная ошибка в verify_domain_with_vt для {domain}: {e}")
         return False, f"Неожиданная ошибка VT: {e}"

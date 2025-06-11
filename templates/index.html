@@ -84,12 +84,15 @@
         </div>
 
         <div class="results-container">
-            <h3>Результаты:</h3>
-            <button id="copy-all-btn" style="display: none;">Скопировать все</button>
+            <div class="results-header">
+                <h3>Найденные домены</h3>
+                <div>
+                    <button id="copy-all-btn" style="display: none;">Скопировать все</button>
+                    <button id="export-csv-btn" style="display: none;">Скачать CSV</button>
+                </div>
+            </div>
+            <ul id="results"></ul>
         </div>
-        <ul id="results">
-            <!-- Results will be injected here by JavaScript -->
-        </ul>
     </div>
 
     <script>
@@ -100,6 +103,7 @@
             const stopBtn = document.getElementById('stop-btn');
             const domainCountInput = document.getElementById('domain_count');
             const copyBtn = document.getElementById('copy-all-btn');
+            const exportCsvBtn = document.getElementById('export-csv-btn');
             const runForm = document.getElementById('run-form');
             const progressBarContainer = document.querySelector('.progress-bar-container');
             const progressBar = document.querySelector('.progress-bar');
@@ -154,11 +158,7 @@
                         resultsUl.innerHTML = '';
                         data.results.forEach(result => {
                             const li = document.createElement('li');
-                            const a = document.createElement('a');
-                            a.href = result.vt_link;
-                            a.textContent = result.name;
-                            a.target = '_blank';
-                            li.appendChild(a);
+                            li.innerHTML = `<a href="${result.vt_link}" target="_blank">${result.domain}</a>`;
                             resultsUl.appendChild(li);
                         });
 
@@ -171,7 +171,14 @@
                             domainCountInput.value = data.target_count;
                         }
                         
-                        copyBtn.style.display = data.results.length > 0 ? 'inline-block' : 'none';
+                        // Show/hide copy and export buttons based on results, not status
+                        if (data.results.length > 0) {
+                            copyBtn.style.display = 'inline-block';
+                            exportCsvBtn.style.display = 'inline-block';
+                        } else {
+                            copyBtn.style.display = 'none';
+                            exportCsvBtn.style.display = 'none';
+                        }
 
                         if (isRunning && !intervalId) {
                             intervalId = setInterval(updateStatus, 3000);
@@ -213,25 +220,16 @@
             });
 
             copyBtn.addEventListener('click', function() {
-                fetch('/status')
-                    .then(response => response.json())
-                    .then(data => {
-                        if (data.results && data.results.length > 0) {
-                            const domainNames = data.results.map(r => r.name).join('\n');
-                            navigator.clipboard.writeText(domainNames).then(() => {
-                                const originalText = copyBtn.textContent;
-                                copyBtn.textContent = 'Скопировано!';
-                                copyBtn.disabled = true;
-                                setTimeout(() => {
-                                    copyBtn.textContent = originalText;
-                                    copyBtn.disabled = false;
-                                }, 2000);
-                            }).catch(err => {
-                                console.error('Failed to copy text: ', err);
-                                alert('Не удалось скопировать текст.');
-                            });
-                        }
+                fetch('/status').then(res => res.json()).then(data => {
+                    const textToCopy = data.results.map(r => r.domain).join('\\n');
+                    navigator.clipboard.writeText(textToCopy).then(() => {
+                        // Optional: show a confirmation
                     });
+                });
+            });
+
+            exportCsvBtn.addEventListener('click', function() {
+                window.location.href = '/export_csv';
             });
 
             updateStatus();

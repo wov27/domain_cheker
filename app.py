@@ -12,7 +12,9 @@ import threading
 import time
 import os
 import configparser
-from flask import Flask, render_template, request, jsonify, redirect, url_for
+import io
+import csv
+from flask import Flask, render_template, request, jsonify, redirect, url_for, make_response
 import checker
 from checker import TaskStoppedException
 
@@ -76,15 +78,19 @@ class StatusManager:
                 del self._state['domains_in_progress'][domain]
             self._state['current_domain_index'] += 1
 
-    def add_clean_domain(self, domain):
+    def add_clean_domain(self, domain_name, vt_link):
         with self._lock:
-            # Ensure we don't add more than requested if threads finish close together
+            if self._state['status'] in ['stopping', 'done']:
+                return False
+
             if len(self._state['results']) < self._state['target_count']:
-                result_obj = {"name": domain, "vt_link": f"https://www.virustotal.com/gui/domain/{domain}"}
-                self._state['results'].append(result_obj)
-                self._state['stats']['clean'] = len(self._state['results'])
-                return True
-            return False
+                self._state['results'].append({'domain': domain_name, 'vt_link': vt_link})
+                self._state['stats']['clean'] += 1
+                if len(self._state['results']) >= self._state['target_count']:
+                    self._state['status'] = 'done'
+                    self._state['progress_message'] = f"Задача выполнена. Найдено {len(self._state['results'])} доменов."
+                    return False  # Stop other threads
+            return True
 
     def get_found_count(self):
         with self._lock:
@@ -207,6 +213,32 @@ def stop_task():
     """
     status_manager.set_status('stopping', 'Получен запрос на остановку...')
     return jsonify({"message": "Stop request received."})
+
+@app.route('/export_csv')
+def export_csv():
+    """
+    Generates and serves a CSV file of the found clean domains.
+    """
+    with task_lock:
+        results = task_state.get("results", [])
+        if not results:
+            return redirect(url_for('index'))
+
+        # Use io.StringIO to create the CSV in memory
+        output = io.StringIO()
+        # The field names must match the keys in the results dictionaries
+        fieldnames = ['domain', 'vt_link']
+        writer = csv.DictWriter(output, fieldnames=fieldnames)
+
+        # Write header and data rows
+        writer.writerow({'domain': 'Domain', 'vt_link': 'VirusTotal Report URL'})
+        writer.writerows(results)
+
+        # Create a Flask response object
+        response = make_response(output.getvalue())
+        response.headers["Content-Disposition"] = "attachment; filename=results.csv"
+        response.headers["Content-Type"] = "text/csv"
+        return response
 
 if __name__ == '__main__':
     # For local development, run the app with Flask's built-in server in debug mode.
