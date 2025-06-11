@@ -19,95 +19,138 @@ from checker import TaskStoppedException
 app = Flask(__name__)
 
 # --- In-memory State Management ---
+# Using a lock is crucial for multi-threaded access to the shared task_state.
+task_lock = threading.Lock()
 task_state = {
     "status": "idle",  # "idle", "running", "stopping", "done", "error"
     "progress_message": "Готов к работе.",
     "results": [],
     "target_count": 0,
+    "max_workers": 5,
+    "expired_domains_url": "", 
+    "current_domain_index": 0,
+    "total_domains": 0,
+    "domains_in_progress": {}, # {'domain.com': 'status message'}
     "stats": {"clean": 0}
 }
 
-def run_checker_task(target_domain_count):
+# This class acts as a thread-safe proxy to the global `task_state`.
+# All checker threads will use an instance of this to report progress.
+class StatusManager:
+    def __init__(self, state_dict, lock):
+        self._state = state_dict
+        self._lock = lock
+
+    def reset(self, target_count, max_workers, custom_url):
+        with self._lock:
+            self._state.update({
+                "status": "running", "progress_message": "Инициализация...",
+                "results": [], "stats": {"clean": 0}, "target_count": target_count,
+                "max_workers": max_workers,
+                "expired_domains_url": custom_url or "Using config value",
+                "current_domain_index": 0,
+                "total_domains": 0,
+                "domains_in_progress": {}
+            })
+
+    def is_stopping(self):
+        with self._lock:
+            return self._state['status'] == 'stopping'
+
+    def set_total_domains(self, total):
+        with self._lock:
+            self._state['total_domains'] = total
+
+    def set_progress_message(self, message):
+        with self._lock:
+            if self._state['status'] == 'running':
+                self._state['progress_message'] = message
+
+    def update_domain_status(self, domain, message):
+        with self._lock:
+            self._state['domains_in_progress'][domain] = message
+            
+    def remove_domain_from_progress(self, domain):
+        with self._lock:
+            if domain in self._state['domains_in_progress']:
+                del self._state['domains_in_progress'][domain]
+            self._state['current_domain_index'] += 1
+
+    def add_clean_domain(self, domain):
+        with self._lock:
+            # Ensure we don't add more than requested if threads finish close together
+            if len(self._state['results']) < self._state['target_count']:
+                result_obj = {"name": domain, "vt_link": f"https://www.virustotal.com/gui/domain/{domain}"}
+                self._state['results'].append(result_obj)
+                self._state['stats']['clean'] = len(self._state['results'])
+                return True
+            return False
+
+    def get_found_count(self):
+        with self._lock:
+            return len(self._state['results'])
+
+    def set_status(self, status, message=None):
+        with self._lock:
+            self._state['status'] = status
+            if message:
+                self._state['progress_message'] = message
+
+# A single global instance of the manager
+status_manager = StatusManager(task_state, task_lock)
+
+def run_checker_task(target_domain_count, max_workers, custom_url):
     """
-    The main worker function that runs the domain checking process.
-
-    This function acts as a consumer for the `domain_check_generator` from the `checker` module.
-    It initializes the application state, reads the necessary configuration, and then
-    iterates over the generator. For each domain yielded by the generator, it updates
-    the global `task_state`. It also handles exceptions, including user-initiated stops
-    and other unexpected errors, ensuring the application state is always consistent.
-
-    Args:
-        target_domain_count (int): The number of clean domains the user wants to find.
+    The main worker function that runs the domain checking process in parallel.
     """
-    global task_state
-
-    task_state.update({
-        "status": "running", "progress_message": "Инициализация...",
-        "results": [], "stats": {"clean": 0}, "target_count": target_domain_count
-    })
-
-    def update_status_callback(message):
-        task_state['progress_message'] = message
-
-    def check_stop_flag():
-        return task_state['status'] == 'stopping'
+    status_manager.reset(target_domain_count, max_workers, custom_url)
 
     try:
+        # Determine URL: use custom_url if provided, else fallback to config/env
+        final_url = custom_url
+        if not final_url:
+            if os.getenv('EXPIRED_DOMAINS_URL'):
+                final_url = os.getenv('EXPIRED_DOMAINS_URL')
+            else:
+                config = configparser.ConfigParser()
+                config.read('config.ini')
+                final_url = config.get('VARS', 'EXPIRED_DOMAINS_URL', fallback=None)
+
         if os.getenv('VIRUSTOTAL_API_KEY'):
-            # Production environment (e.g., Render)
             cfg_get = os.environ.get
-            expired_domains_url = cfg_get('EXPIRED_DOMAINS_URL')
             api_key = cfg_get('VIRUSTOTAL_API_KEY')
-            session_cookies = {
-                "ExpiredDomainssessid": cfg_get('SESSION_ID'), "reme": cfg_get('REME_COOKIE')
-            }
+            session_cookies = {"ExpiredDomainssessid": cfg_get('SESSION_ID'), "reme": cfg_get('REME_COOKIE')}
         else:
-            # Local development
             config = configparser.ConfigParser()
             config.read('config.ini')
             cfg = config['VARS']
-            cfg_get = cfg.get
-            expired_domains_url = cfg_get('EXPIRED_DOMAINS_URL')
-            api_key = cfg_get('VIRUSTOTAL_API_KEY')
-            session_cookies = {
-                "ExpiredDomainssessid": cfg_get('SESSION_ID'), "reme": cfg_get('REME_COOKIE')
-            }
+            api_key = cfg.get('VIRUSTOTAL_API_KEY')
+            session_cookies = {"ExpiredDomainssessid": cfg.get('SESSION_ID'), "reme": cfg.get('REME_COOKIE')}
 
-        if not all([expired_domains_url, session_cookies["ExpiredDomainssessid"], session_cookies["reme"]]):
-             raise Exception("Конфигурация не заполнена. Укажите URL и cookies в config.ini или переменных окружения.")
+        if not all([final_url, session_cookies["ExpiredDomainssessid"], session_cookies["reme"]]):
+             raise Exception("Конфигурация не заполнена. Проверьте URL и cookies.")
 
-        domain_generator = checker.domain_check_generator(
-            url=expired_domains_url, cookies=session_cookies, vt_api_key=api_key,
+        # This is now a blocking call that performs the entire parallel check.
+        checker.run_parallel_check(
+            url=final_url,
+            cookies=session_cookies,
+            vt_api_key=api_key,
             target_domain_count=target_domain_count,
-            update_status_callback=update_status_callback,
-            check_stop_flag=check_stop_flag
+            max_workers=max_workers,
+            status_manager=status_manager
         )
 
-        clean_domains_found = []
-        for domain in domain_generator:
-            result_obj = {
-                "name": domain,
-                "vt_link": f"https://www.virustotal.com/gui/domain/{domain}"
-            }
-            clean_domains_found.append(result_obj)
-            
-            task_state["results"] = clean_domains_found
-            task_state["stats"]["clean"] = len(clean_domains_found)
-            update_status_callback(f"Найден чистый домен: {domain} ({len(clean_domains_found)}/{target_domain_count})")
-            time.sleep(1)
-
-        if task_state['status'] == 'running':
-            task_state['status'] = 'done'
+        if status_manager.is_stopping():
+            status_manager.set_status('idle', 'Проверка остановлена пользователем.')
+        else:
+            found_count = status_manager.get_found_count()
+            status_manager.set_status('done', f'Задача выполнена. Найдено {found_count} доменов.')
 
     except TaskStoppedException:
-        task_state['status'] = 'idle'
-        task_state['progress_message'] = 'Проверка остановлена пользователем.'
-
+        status_manager.set_status('idle', 'Проверка остановлена пользователем.')
     except Exception as e:
         print(f"Критическая ошибка в фоновой задаче: {e}")
-        task_state["status"] = "error"
-        task_state["progress_message"] = f"Критическая ошибка: {e}"
+        status_manager.set_status("error", f"Критическая ошибка: {e}")
 
 @app.route('/')
 def index():
@@ -127,12 +170,18 @@ def run_task():
         
     try:
         target_count = int(request.form.get('domain_count', 15))
+        max_workers = int(request.form.get('max_workers', 5))
     except (ValueError, TypeError):
         target_count = 15
+        max_workers = 5
     
-    task_state['status'] = 'running'
+    custom_url = request.form.get('expired_domains_url') or None
     
-    thread = threading.Thread(target=run_checker_task, args=(target_count,))
+    # We set the status to 'running' under the lock via the manager
+    # but the thread starts right after, so it's a minimal race condition.
+    status_manager.set_status('running', 'Запуск потоков...')
+    
+    thread = threading.Thread(target=run_checker_task, args=(target_count, max_workers, custom_url))
     thread.start()
     
     return redirect(url_for('index'))
@@ -145,7 +194,8 @@ def status():
     This endpoint is polled by the frontend JavaScript to dynamically update the UI
     with the latest progress messages, results, and overall application state.
     """
-    return jsonify(task_state)
+    with task_lock:
+        return jsonify(task_state)
 
 @app.route('/stop', methods=['POST'])
 def stop_task():
@@ -155,8 +205,7 @@ def stop_task():
     It sets the status to 'stopping', which is detected by the `check_stop_flag`
     callback inside the generator, causing a `TaskStoppedException` to be raised.
     """
-    if task_state['status'] == 'running':
-        task_state['status'] = 'stopping'
+    status_manager.set_status('stopping', 'Получен запрос на остановку...')
     return jsonify({"message": "Stop request received."})
 
 if __name__ == '__main__':

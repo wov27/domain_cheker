@@ -22,6 +22,24 @@
         #results a { color: #2980b9; text-decoration: none; }
         #results a:hover { text-decoration: underline; }
         #copy-all-btn { font-size: 14px; background-color: #1abc9c; }
+        .progress-bar-container {
+            width: 100%;
+            background-color: #e0e6ed;
+            border-radius: 4px;
+            margin-top: 15px;
+            display: none; /* Hidden by default */
+        }
+        .progress-bar {
+            width: 0%;
+            height: 20px;
+            background-color: #27ae60;
+            border-radius: 4px;
+            text-align: center;
+            color: white;
+            line-height: 20px;
+            font-size: 14px;
+            transition: width 0.4s ease;
+        }
     </style>
 </head>
 <body>
@@ -34,6 +52,14 @@
                     <label for="domain_count">Количество доменов для поиска:</label>
                     <input type="number" id="domain_count" name="domain_count" value="15" min="1" max="100">
                 </div>
+                <div style="margin-top: 15px;">
+                    <label for="max_workers">Количество параллельных потоков:</label>
+                    <input type="number" id="max_workers" name="max_workers" value="5" min="1" max="20">
+                </div>
+                <div style="margin-top: 15px;">
+                    <label for="expired_domains_url">URL для парсинга (опционально):</label>
+                    <input type="text" id="expired_domains_url" name="expired_domains_url" style="width: 100%; padding: 8px; border-radius: 4px; border: 1px solid #ccc; box-sizing: border-box;" placeholder="Оставьте пустым, чтобы использовать URL из config.ini">
+                </div>
                 <div class="button-group">
                     <button type="submit" id="start-btn">Начать проверку</button>
                     <button type="button" id="stop-btn" disabled>Стоп</button>
@@ -44,6 +70,17 @@
         <div class="status-container">
             <h2>Статус</h2>
             <div id="status">Ожидание...</div>
+            <div id="current-url" style="font-size: 0.9em; color: #555; margin-top: 5px;"></div>
+            <div class="progress-bar-container">
+                <div class="progress-bar">0%</div>
+            </div>
+        </div>
+
+        <div class="processing-container" style="margin-top: 20px;">
+            <h3>В обработке:</h3>
+            <div id="in-progress-list" style="font-family: monospace; font-size: 0.9em; max-height: 200px; overflow-y: auto; border: 1px solid #eee; padding: 10px; border-radius: 4px;">
+                <!-- Domain statuses will be injected here -->
+            </div>
         </div>
 
         <div class="results-container">
@@ -64,6 +101,11 @@
             const domainCountInput = document.getElementById('domain_count');
             const copyBtn = document.getElementById('copy-all-btn');
             const runForm = document.getElementById('run-form');
+            const progressBarContainer = document.querySelector('.progress-bar-container');
+            const progressBar = document.querySelector('.progress-bar');
+            const urlDiv = document.getElementById('current-url');
+            const inProgressList = document.getElementById('in-progress-list');
+            const maxWorkersInput = document.getElementById('max_workers');
 
             let intervalId = null;
 
@@ -74,7 +116,41 @@
                         const isRunning = data.status === 'running' || data.status === 'stopping';
                         
                         statusDiv.textContent = data.progress_message || '...';
+
+                        if (isRunning && data.expired_domains_url) {
+                            let url_text = data.expired_domains_url;
+                            if (url_text === "Using config value") {
+                                urlDiv.textContent = `URL: используется значение из config.ini`;
+                            } else {
+                                let display_url = url_text.length > 70 ? url_text.substring(0, 67) + '...' : url_text;
+                                urlDiv.textContent = `URL: ${display_url}`;
+                            }
+                        } else {
+                            urlDiv.textContent = '';
+                        }
                         
+                        // Update in-progress list
+                        if (isRunning && data.domains_in_progress && Object.keys(data.domains_in_progress).length > 0) {
+                            inProgressList.innerHTML = '';
+                            for (const [domain, status] of Object.entries(data.domains_in_progress)) {
+                                const div = document.createElement('div');
+                                div.textContent = `${domain}: ${status}`;
+                                inProgressList.appendChild(div);
+                            }
+                        } else {
+                            inProgressList.innerHTML = '...';
+                        }
+
+                        // Update progress bar
+                        if (isRunning && data.total_domains > 0) {
+                            progressBarContainer.style.display = 'block';
+                            const progress = Math.round((data.current_domain_index / data.total_domains) * 100);
+                            progressBar.style.width = progress + '%';
+                            progressBar.textContent = progress + '%';
+                        } else {
+                            progressBarContainer.style.display = 'none';
+                        }
+
                         resultsUl.innerHTML = '';
                         data.results.forEach(result => {
                             const li = document.createElement('li');
@@ -89,6 +165,8 @@
                         startBtn.disabled = isRunning;
                         stopBtn.disabled = !isRunning;
                         domainCountInput.disabled = isRunning;
+                        maxWorkersInput.disabled = isRunning;
+                        document.getElementById('expired_domains_url').disabled = isRunning;
                         if (isRunning) {
                             domainCountInput.value = data.target_count;
                         }
@@ -100,11 +178,16 @@
                         } else if (!isRunning && intervalId) {
                             clearInterval(intervalId);
                             intervalId = null;
+                            progressBarContainer.style.display = 'none'; // Hide on stop/finish
+                            urlDiv.textContent = '';
+                            inProgressList.innerHTML = '';
                         }
                     })
                     .catch(error => {
                         console.error('Error fetching status:', error);
                         statusDiv.textContent = 'Ошибка соединения с сервером.';
+                        urlDiv.textContent = '';
+                        inProgressList.innerHTML = '';
                         if (intervalId) {
                             clearInterval(intervalId);
                             intervalId = null;
