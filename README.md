@@ -130,8 +130,8 @@ graph TD
     I -- "Цель достигнута" --> M["Остановка всех потоков"];
     L --> N["Пользователь копирует<br/>или скачивает CSV"];
 
-    style A fill:#cde4f9,stroke:#333
-    style N fill:#cde4f9,stroke:#333
+    style A fill:#fff9c4,stroke:#333,color:#333
+    style N fill:#fff9c4,stroke:#333,color:#333
     style I fill:#d4edda,stroke:#155724
     style H fill:#f8d7da,stroke:#721c24
 ```
@@ -139,13 +139,3 @@ graph TD
 ## Структура проекта
 
 ```
-.
-├── app.py                # Flask-приложение: роуты, управление фоновой задачей и состоянием.
-├── checker.py            # Ядро логики: параллельная проверка доменов (WHOIS, VirusTotal).
-├── config.ini            # Конфигурация и секреты (ключи, cookies). Игнорируется Git.
-├── requirements.txt      # Зависимости Python.
-├── templates/
-│   └── index.html        # HTML-шаблон веб-интерфейса.
-├── .gitignore            # Файлы, игнорируемые Git.
-└── README.md             # Эта документация.
-``` 
